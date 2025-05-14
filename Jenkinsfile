@@ -3,10 +3,10 @@ pipeline {
 
     environment {
         DOCKER_CREDENTIALS_ID = 'roseaw-dockerhub'  
-        DOCKER_IMAGE = 'cithit/allame'                                   //<-----change this to your MiamiID!
+        DOCKER_IMAGE = 'cithit/allame'                     // Change to your MiamiID Docker image
         IMAGE_TAG = "build-${BUILD_NUMBER}"
-        GITHUB_URL = 'https://github.com/miamioh-allame/225-lab4-2.git'     //<-----change this to match this new repository!
-        KUBECONFIG = credentials('allame-225')                           //<-----change this to match your kubernetes credentials (MiamiID-225)! 
+        GITHUB_URL = 'https://github.com/miamioh-allame/lab-5-1.git' // Change to your repo
+        KUBECONFIG = credentials('allame-225')             // Change to your Kubernetes creds
     }
 
     stages {
@@ -18,6 +18,13 @@ pipeline {
             }
         }
 
+        stage('Lint HTML') {
+            steps {
+                sh 'npm install htmlhint --save-dev'
+                sh 'npx htmlhint *.html'
+            }
+        }
+        
         stage('Build Docker Image') {
             steps {
                 script {
@@ -39,10 +46,6 @@ pipeline {
         stage('Deploy to Dev Environment') {
             steps {
                 script {
-                    // This sets up the Kubernetes configuration using the specified KUBECONFIG
-                    def kubeConfig = readFile(KUBECONFIG)
-                    sh "kubectl delete --all deployments --namespace=default"
-                    // This updates the deployment-dev.yaml to use the new image tag
                     sh "sed -i 's|${DOCKER_IMAGE}:latest|${DOCKER_IMAGE}:${IMAGE_TAG}|' deployment-dev.yaml"
                     sh "kubectl apply -f deployment-dev.yaml"
                 }
@@ -52,15 +55,12 @@ pipeline {
         stage('Generate Test Data') {
             steps {
                 script {
-                // Ensure the label accurately targets the correct pods.
-                def appPod = sh(script: "kubectl get pods -l app=flask -o jsonpath='{.items[0].metadata.name}'", returnStdout: true).trim()
-                // Execute command within the pod. 
-                sh "kubectl get pods"
-                sh "sleep 15"
-                sh "kubectl exec ${appPod} -- python3 data-gen.py"
+                    sh "sleep 15"
+                    def appPod = sh(script: "kubectl get pods -l app=flask -o jsonpath='{.items[0].metadata.name}'", returnStdout: true).trim()
+                    sh "kubectl exec ${appPod} -- python3 data-gen.py"
                 }
             }
-    }
+        }
 
         stage("Run Acceptance Tests") {
             steps {
@@ -72,17 +72,37 @@ pipeline {
                 }
             }
         }
-        
+
+        stage("Run Security Checks") {
+            steps {
+                sh 'docker pull public.ecr.aws/portswigger/dastardly:latest'
+                sh '''
+                    docker run --user $(id -u) -v ${WORKSPACE}:${WORKSPACE}:rw \
+                    -e BURP_START_URL=http://10.48.10.127 \
+                    -e BURP_REPORT_FILE_PATH=${WORKSPACE}/dastardly-report.xml \
+                    public.ecr.aws/portswigger/dastardly:latest
+                '''
+            }
+        }
+
+        stage('Deploy to Prod Environment') {
+            steps {
+                script {
+                    sh "sed -i 's|${DOCKER_IMAGE}:latest|${DOCKER_IMAGE}:${IMAGE_TAG}|' deployment-prod.yaml"
+                    sh "kubectl apply -f deployment-prod.yaml"
+                }
+            }
+        }
+
         stage('Remove Test Data') {
             steps {
                 script {
-                    // Run the python script to generate data to add to the database
                     def appPod = sh(script: "kubectl get pods -l app=flask -o jsonpath='{.items[0].metadata.name}'", returnStdout: true).trim()
                     sh "kubectl exec ${appPod} -- python3 data-clear.py"
                 }
             }
         }
-         
+
         stage('Check Kubernetes Cluster') {
             steps {
                 script {
@@ -93,7 +113,6 @@ pipeline {
     }
 
     post {
-
         success {
             slackSend color: "good", message: "Build Completed: ${env.JOB_NAME} ${env.BUILD_NUMBER}"
         }
@@ -101,7 +120,4 @@ pipeline {
             slackSend color: "warning", message: "Build Completed: ${env.JOB_NAME} ${env.BUILD_NUMBER}"
         }
         failure {
-            slackSend color: "danger", message: "Build Completed: ${env.JOB_NAME} ${env.BUILD_NUMBER}"
-        }
-    }
-}
+            slackSend color: "danger", message: "Build Completed
